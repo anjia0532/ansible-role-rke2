@@ -3,17 +3,20 @@
 server: https://{{ rke2_api_ip }}:9345
 {% endif %}
 token: {{ rke2_token }}
+data-dir: {{ rke2_data_path }}
 {% if inventory_hostname in groups[rke2_servers_group_name] %}
 cni: {{ rke2_cni }}
-{% if rke2_server_taint %}
-node-taint:
-  - "CriticalAddonsOnly=true:NoExecute"
-{% endif %}
 tls-san:
   - cluster.local
   - {{ rke2_api_ip }}
 {% for san in rke2_additional_sans %}
   - {{ san }}
+{% endfor %}
+{% endif %}
+{% if ( combined_node_taints is defined and combined_node_taints|length > 0) %}
+node-taint:
+{% for taint in combined_node_taints %}
+  - {{ taint }}
 {% endfor %}
 {% endif %}
 {% if rke2_disable and ( inventory_hostname|string() in groups[rke2_servers_group_name] ) %}

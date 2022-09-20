@@ -40,23 +40,14 @@ This is a copy of `defaults/main.yml`
 ```yaml
 ---
 
+# Default nodetaints
+node_taints: []
+
 # The node type - server or agent
 rke2_type: server
 
 # Deploy the control plane in HA mode
 rke2_ha_mode: false
-
-# Changes the deploy strategy to install based on local artifacts
-rke2_airgap_mode: false
-
-# Airgap implementation type - download, copy or exists
-# - 'download' will fetch the artifacts on each node,
-# - 'copy' will transfer local files in 'rke2_artifact' to the nodes,
-# - 'exists' assumes 'rke2_artifact' files are already stored in 'rke2_artifact_path'
-rke2_airgap_implementation: download
-
-# Local source path where artifacts are stored
-rke2_airgap_copy_sourcepath: local_artifacts
 
 # Install and configure Keepalived on Server nodes
 # Can be disabled if you are using pre-configured Load Balancer
@@ -66,10 +57,9 @@ rke2_ha_mode_keepalived: true
 # rke2_ha_mode_keepalived needs to be false
 rke2_ha_mode_kubevip: false
 
-
 # Kubernetes API and RKE2 registration IP address. The default Address is the IPv4 of the Server/Master node.
-# In HA mode choose a static IP which will be set as VIP in Keepalived or Kube-VIP.
-# Or if the keepalived and Kube-VIP in this role are disabled, use IP address of your LB.
+# In HA mode choose a static IP which will be set as VIP in keepalived.
+# Or if the keepalived is disabled, use IP address of your LB.
 rke2_api_ip: "{{ hostvars[groups[rke2_servers_group_name].0]['ansible_default_ipv4']['address'] }}"
 
 # optional option for kubevip IP subnet
@@ -80,6 +70,12 @@ rke2_api_ip: "{{ hostvars[groups[rke2_servers_group_name].0]['ansible_default_ip
 
 # optiononal option for kubevip load balancer IP range
 # rke2_loadbalancer_ip_range: 192.168.1.50-192.168.1.100
+
+# Install kubevip cloud provider if rke2_ha_mode_kubevip is true
+rke2_kubevip_cloud_provider_enable: true
+
+# Enable kube-vip to watch Services of type LoadBalancer
+rke2_kubevip_svc_enable: true
 
 # Add additional SANs in k8s API TLS cert
 rke2_additional_sans: []
@@ -94,7 +90,7 @@ rke2_server_taint: false
 rke2_token: defaultSecret12345
 
 # RKE2 version
-rke2_version: v1.22.6+rke2r1
+rke2_version: v1.24.3+rke2r1
 
 # URL to RKE2 repository
 rke2_channel_url: https://update.rke2.io/v1-release/channels
@@ -117,6 +113,25 @@ rke2_artifact:
   - sha256sum-{{ rke2_architecture }}.txt
   - rke2.linux-{{ rke2_architecture }}.tar.gz
   - rke2-images.linux-{{ rke2_architecture }}.tar.zst
+
+# Changes the deploy strategy to install based on local artifacts
+rke2_airgap_mode: false
+
+# Airgap implementation type - download, copy or exists
+# - 'download' will fetch the artifacts on each node,
+# - 'copy' will transfer local files in 'rke2_artifact' to the nodes,
+# - 'exists' assumes 'rke2_artifact' files are already stored in 'rke2_artifact_path'
+rke2_airgap_implementation: download
+
+# Local source path where artifacts are stored
+rke2_airgap_copy_sourcepath: local_artifacts
+
+# Tarball images for additional components to be copied from rke2_airgap_copy_sourcepath to the nodes
+# (File extensions in the list and on the real files must be retained)
+rke2_airgap_copy_additional_tarballs: []
+
+# Destination for airgap additional images tarballs ( see https://docs.rke2.io/install/airgap/#tarball-method )
+rke2_tarball_images_path: "{{ rke2_data_path }}/agent/images"
 
 # Architecture to be downloaded, currently there are releases for amd64 and s390x
 rke2_architecture: amd64
@@ -141,6 +156,7 @@ rke2_static_pods:
 rke2_custom_registry_mirrors:
   - name:
     endpoint: {}
+#   rewrite: '"^rancher/(.*)": "mirrorproject/rancher-images/$1"'
 
 # Configure custom Containerd Registry additional configuration
 # rke2_custom_registry_configs:
@@ -152,6 +168,18 @@ rke2_custom_registry_path: templates/registries.yaml.j2
 
 # Path to RKE2 config file template
 rke2_config: templates/config.yaml.j2
+
+# Etcd snapshot source directory
+rke2_etcd_snapshot_source_dir: etcd_snapshots
+
+# Etcd snapshot file name.
+# When the file name is defined, the etcd will be restored on initial deployment Ansible run.
+# The etcd will be restored only during the initial run, so even if you will leave the the file name specified,
+# the etcd will remain untouched during the next runs.
+rke2_etcd_snapshot_file:
+
+# Etcd snapshot location
+rke2_etcd_snapshot_destination_dir: "{{ rke2_data_path }}/server/db/snapshots"
 
 # Override default containerd snapshotter
 rke2_snapshooter: overlayfs
@@ -193,6 +221,9 @@ rke2_agents_group_name: workers
 # You could find the flags at https://docs.rke2.io/install/install_options/install_options/#configuring-linux-rke2-agent-nodes
 # rke2_agent_options:
 #   - "option: value"
+
+# Crdon, drain the node which is being upgraded. Uncordon the node once the RKE2 upgraded
+rke2_drain_node_during_upgrade: false
 
 ```
 
@@ -241,7 +272,7 @@ This playbook will deploy RKE2 to a cluster with one server(master) and several 
 
 ```
 
-This playbook will deploy RKE2 to a cluster with one server(master) and several agent(worker) nodes in air-gapped mode. This works from downloading artifacts. When the RKE2 script installs, it will use the artifacts instead of using online resources.
+This playbook will deploy RKE2 to a cluster with one server(master) and several agent(worker) nodes in air-gapped mode. It will use Multus and Calico as CNI.
 
 ```yaml
 - name: Deploy RKE2
@@ -249,12 +280,23 @@ This playbook will deploy RKE2 to a cluster with one server(master) and several 
   become: yes
   vars:
     rke2_airgap_mode: true
+    rke2_airgap_implementation: download
+    rke2_cni:
+      - multus
+      - calico
+    rke2_artifact:
+      - sha256sum-{{ rke2_architecture }}.txt
+      - rke2.linux-{{ rke2_architecture }}.tar.gz
+      - rke2-images.linux-{{ rke2_architecture }}.tar.zst
+    rke2_airgap_copy_additional_tarballs:
+      - rke2-images-multus.linux-{{ rke2_architecture }}
+      - rke2-images-calico.linux-{{ rke2_architecture }}
   roles:
      - role: lablabs.rke2
 
 ```
 
-This playbook will deploy RKE2 to a cluster with HA server(master) control-plane and several  agent(worker) nodes. The server(master) nodes will be tainted so the workload will be distributed only on worker/agent nodes. The role will install also keepalived on the control-plane nodes and setup VIP address where the Kubernetes API will be reachable. it will also download the Kubernetes config file to the local machine.
+This playbook will deploy RKE2 to a cluster with HA server(master) control-plane and several agent(worker) nodes. The server(master) nodes will be tainted so the workload will be distributed only on worker/agent nodes. The role will install also keepalived on the control-plane nodes and setup VIP address where the Kubernetes API will be reachable. it will also download the Kubernetes config file to the local machine.
 
 ```yaml
 - name: Deploy RKE2
@@ -269,6 +311,15 @@ This playbook will deploy RKE2 to a cluster with HA server(master) control-plane
      - role: lablabs.rke2
 
 ```
+
+## Troubleshooting
+
+### Playbook stuck while starting the RKE2 service on agents
+
+If the playbook starts to hang at the `Start RKE2 service on the rest of the nodes` task and then fails at the `Wait for remaining nodes to be ready` task, you probably have some limitations on you nodes' network.
+
+Please check the required *Inbound Rules for RKE2 Server Nodes* at the following link: <https://docs.rke2.io/install/requirements/#networking>.
+
 
 ## License
 
